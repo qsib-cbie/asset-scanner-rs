@@ -1,123 +1,24 @@
-extern crate btleplug;
-extern crate rand;
+mod ble;
+mod error;
 
-use btleplug::api::{Central, CentralEvent, Peripheral};
-#[cfg(target_os = "linux")]
-use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
-#[cfg(target_os = "macos")]
-use btleplug::corebluetooth::{adapter::Adapter, manager::Manager};
-#[cfg(target_os = "windows")]
-use btleplug::winrtble::{adapter::Adapter, manager::Manager};
+fn main() -> error::Result<()> {
+    let matches = clap::App::new("BLE Asset Scanner")
+        .version("0.1")
+        .author("Jacob Trueb <jtrueb@northwestern.edu")
+        .about("Search for asset tags and record contact")
+        .arg(clap::Arg::with_name("endpoint")
+            .help("The address of the asset tracking API")
+            .required(false)
+            .takes_value(true))
+        .get_matches();
 
-// adapter retrieval works differently depending on your platform right now.
-// API needs to be aligned.
+    env_logger::init();
+    log::trace!("CLAP: {:#?}", matches);
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn get_central(manager: &Manager) -> Adapter {
-    let adapters = manager.adapters().unwrap();
-    adapters.into_iter().nth(0).unwrap()
-}
+    let api_endpoint = matches.value_of("endpoint");
+    log::info!("Using API: {:?}", api_endpoint);
 
-#[cfg(target_os = "linux")]
-fn get_central(manager: &Manager) -> ConnectedAdapter {
-    let adapters = manager.adapters().unwrap();
-    let adapter = adapters.into_iter().nth(0).unwrap();
-    adapter.connect().unwrap()
-}
-
-pub fn main() {
-    let manager = Manager::new().unwrap();
-
-    // get the first bluetooth adapter
-    // connect to the adapter
-    let central = get_central(&manager);
-
-    // Each adapter can only have one event receiver. We fetch it via
-    // event_receiver(), which will return an option. The first time the getter
-    // is called, it will return Some(Receiver<CentralEvent>). After that, it
-    // will only return None.
-    //
-    // While this API is awkward, is is done as not to disrupt the adapter
-    // retrieval system in btleplug v0.x while still allowing us to use event
-    // streams/channels instead of callbacks. In btleplug v1.x, we'll retrieve
-    // channels as part of adapter construction.
-    let event_receiver = central.event_receiver().unwrap();
-
-    // start scanning for devices
-    central.start_scan().unwrap();
-
-    // Print based on whatever the event receiver outputs. Note that the event
-    // receiver blocks, so in a real program, this should be run in its own
-    // thread (not task, as this library does not yet use async channels).
-    while let Ok(event) = event_receiver.recv() {
-        match event {
-            CentralEvent::DeviceDiscovered(bd_addr) => {
-                // println!("DeviceDiscovered: {:?}", bd_addr);
-                let peripheral = central.peripheral(bd_addr);
-                match peripheral {
-                    Some(peripheral) => {
-                        match peripheral.properties().local_name {
-                            Some(name) => {
-                                for c in peripheral.discover_characteristics().unwrap_or(vec![]) {
-                                    println!("{}: {:?}", name, c);
-                                }
-                                if name.starts_with("SHS") {
-                                    println!("Found {} with {:?}", name, peripheral.properties());
-                                    for c in peripheral.discover_characteristics().unwrap_or(vec![]) {
-                                        println!("{}: {:?}", name, c);
-                                    }
-                                    for c in peripheral.characteristics() {
-                                        println!("{}: {:?}", name, c);
-                                    }
-                                    println!("Connecting");
-                                    peripheral.connect().unwrap();
-                                }
-                            },
-                            _ => {}
-                        }
-                    },
-                    _ => {}
-                }
-            },
-            CentralEvent::DeviceUpdated(bd_addr) => {
-                let peripheral = central.peripheral(bd_addr);
-                match peripheral {
-                    Some(peripheral) => {
-                        match peripheral.properties().local_name {
-                            Some(name) => {
-                                if name.starts_with("SHS") {
-                                    println!("Found {} with {:?}", name, peripheral.properties());
-                                    for c in peripheral.discover_characteristics().unwrap_or(vec![]) {
-                                        println!("{}: {:?}", name, c);
-                                    }
-                                    for c in peripheral.characteristics() {
-                                        println!("{}: {:?}", name, c);
-                                    }
-                                    println!("Connecting");
-                                    peripheral.connect().unwrap();
-                                    println!("Connected");
-                                    peripheral.disconnect().unwrap();
-                                    println!("Disonnected");
-                                }
-                            },
-                            _ => {}
-                        }
-                    },
-                    _ => {}
-                }
-            },
-            CentralEvent::DeviceConnected(bd_addr) => {
-                println!("DeviceConnected: {:?}", bd_addr);
-                std::thread::sleep(std::time::Duration::from_millis(1000));
-                println!("disconnecting: {:?}", bd_addr);
-                central.peripheral(bd_addr).unwrap().disconnect().unwrap();
-            },
-            CentralEvent::DeviceDisconnected(bd_addr) => {
-                println!("DeviceDisconnected: {:?}", bd_addr);
-            },
-            CentralEvent::DeviceLost(bd_addr) => {
-                println!("DeviceLost: {:?}", bd_addr);
-            }
-        }
-    }
+    let context = ble::Context::new();
+    let central = ble::CentralManager::new(&context);
+    central.run()
 }
