@@ -3,12 +3,12 @@ extern crate btleplug;
 use crate::error::*;
 
 use async_std::{
-    prelude::{FutureExt, StreamExt},
-    sync::{channel, Receiver, Sender},
+    prelude::{StreamExt},
+    sync::{Sender},
     task,
 };
-use std::fs::OpenOptions;
-use std::io::prelude::*;
+// use std::fs::OpenOptions;
+// use std::io::prelude::*;
 
 use btleplug::api::{BDAddr, Central, CentralEvent, Peripheral, UUID};
 #[cfg(target_os = "linux")]
@@ -64,7 +64,7 @@ impl CentralManager {
         }
     }
 
-    fn handle_discovered(self: &Self, sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
+    fn handle_discovered(self: &Self, _sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
         log::trace!("DeviceDiscovered: {:#?}", bd_addr);
         let peripheral = self.central.peripheral(bd_addr);
         log::trace!("Peripheral: {:#?}", peripheral);
@@ -87,7 +87,7 @@ impl CentralManager {
         Ok(())
     }
 
-    fn handle_updated(self: &Self, sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
+    fn handle_updated(self: &Self, _sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
         log::info!("DeviceUpdated {:?}", bd_addr);
         let peripheral = self.central.peripheral(bd_addr);
         match peripheral {
@@ -128,15 +128,6 @@ impl CentralManager {
                         task::block_on(async {
                             value_sender.send(EventMessage::CoalesceEvent(value_char_uuid, value)).await;
                         });
-                        // log::info!("Read value: '{:#?}'", &value);
-                        // let mut file = OpenOptions::new()
-                        //     .create(true)
-                        //     .append(true)
-                        //     .open("value-events.log")
-                        //     .unwrap();
-                        // if let Err(e) = writeln!(file, "Value: '{}'", value) {
-                        //     log::error!("Failed to log event: {}", e);
-                        // }
                         Ok(())
                     }();
 
@@ -185,7 +176,7 @@ impl CentralManager {
 
                 task::block_on(async {
                     sender.send(EventMessage::PendingConnect(
-                        std::time::Duration::from_secs(10),
+                        std::time::Duration::from_secs(20),
                         peripheral.clone()
                     )).await
                 });
@@ -198,13 +189,13 @@ impl CentralManager {
         Ok(())
     }
 
-    fn handle_disconnected(self: &Self, sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
+    fn handle_disconnected(self: &Self, _sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
         log::info!("DeviceDisconnected: {:#?}", bd_addr);
 
         Ok(())
     }
 
-    fn handle_lost(self: &Self, sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
+    fn handle_lost(self: &Self, _sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
         log::trace!("DeviceLost: {:#?}", bd_addr);
         Ok(())
     }
@@ -214,6 +205,15 @@ impl CentralManager {
         self.central.start_scan()?;
 
         let (sender, receiver) = async_std::sync::channel::<EventMessage>(256);
+        let sender_clone = sender.clone();
+        task::spawn( async move {
+            loop {
+                task::sleep(std::time::Duration::from_secs(1)).await;
+                log::trace!("Tik ...");
+                sender_clone.send(EventMessage::TikTok).await;
+            }
+        });
+
         let sender_clone = sender.clone();
         task::spawn(async move {
             let mut coalescing_start: Option<std::time::Instant> = None;
@@ -226,8 +226,8 @@ impl CentralManager {
                 });
                 match event_message {
                     EventMessage::PendingConnect(duration, peripheral)=> {
-                        task::block_on(async {
-                            log::info!("Pending connection in {:?}", duration);
+                        log::info!("Pending connection in {:?}", duration);
+                        task::spawn(async move {
                             async_std::task::sleep(duration).await;
                             log::info!("Attempting connecting {:?}", peripheral.properties().local_name);
                             match peripheral.connect() {
@@ -239,8 +239,8 @@ impl CentralManager {
                         });
                     },
                     EventMessage::PendingDisconnect(duration, peripheral)=> {
-                        task::block_on(async {
-                            log::info!("Pending disconnection in {:?}", duration);
+                        log::info!("Pending disconnection in {:?}", duration);
+                        task::spawn(async move {
                             async_std::task::sleep(duration).await;
                             log::info!("Disconnecting {:?}", peripheral.properties().local_name);
                             match peripheral.disconnect() {
@@ -251,6 +251,19 @@ impl CentralManager {
                             }
                         });
                     },
+                    EventMessage::TikTok => {
+                        log::trace!("Tok ...");
+                        match coalescing_start {
+                            Some(start) => {
+                                if start.elapsed() > std::time::Duration::from_secs(2) {
+                                    log::info!("Mark event: {:?}", coalescing_payload);
+                                    coalescing_payload.clear();
+                                    coalescing_start = None;
+                                }
+                            },
+                            _ => {}
+                        }
+                    }
                     EventMessage::CoalesceEvent(char_uuid, message) => {
                         log::info!("Processing {} for {}", message, char_uuid);
                         coalescing_payload.insert(message);
@@ -306,6 +319,7 @@ impl CentralManager {
 }
 
 pub enum EventMessage {
+    TikTok, // nop nop nop
     PendingConnect(std::time::Duration, btleplug::corebluetooth::peripheral::Peripheral),
     PendingDisconnect(std::time::Duration, btleplug::corebluetooth::peripheral::Peripheral),
     CoalesceEvent(UUID, String),
