@@ -6,10 +6,12 @@ fn main() -> error::Result<()> {
         .version("0.1")
         .author("Jacob Trueb <jtrueb@northwestern.edu")
         .about("Search for asset tags and record contact")
-        .arg(clap::Arg::with_name("endpoint")
-            .help("The address of the asset tracking API")
-            .required(false)
-            .takes_value(true))
+        .arg(
+            clap::Arg::with_name("endpoint")
+                .help("The address of the asset tracking API")
+                .required(false)
+                .takes_value(true),
+        )
         .get_matches();
 
     env_logger::init();

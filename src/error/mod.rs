@@ -26,19 +26,19 @@ impl fmt::Display for CliError {
             CliError::ParseUtf8(ref e) => {
                 log::error!("Failed to parse utf8 string");
                 e.fmt(f)
-            },
+            }
             CliError::ParseFloat(ref e) => {
                 log::error!("Failed to parse input as floating point value");
                 e.fmt(f)
-            },
+            }
             CliError::ParseInt(ref e) => {
                 log::error!("Failed to parse input as integer value");
                 e.fmt(f)
-            },
+            }
             CliError::System(ref e) => {
                 log::error!("Failed to run system command");
                 e.fmt(f)
-            },
+            }
             CliError::Mpsc(ref e) => {
                 log::error!("Failed with multithreading messaging error");
                 e.fmt(f)
