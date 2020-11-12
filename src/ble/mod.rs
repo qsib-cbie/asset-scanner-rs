@@ -105,6 +105,7 @@ impl CentralManager {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     fn handle_connected(self: &Self, sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
         log::info!("DeviceConnected: {:?}", bd_addr);
         let peripheral = self.central.peripheral(bd_addr);
@@ -173,6 +174,99 @@ impl CentralManager {
 
                 for c in peripheral.discover_characteristics()? {
                     log::debug!("Already have Characteristic: {:#?}", c);
+                }
+
+                task::block_on(async {
+                    sender
+                        .send(EventMessage::PendingDisconnect(
+                            std::time::Duration::from_secs(10),
+                            peripheral.clone(),
+                        ))
+                        .await
+                });
+
+                task::block_on(async {
+                    sender
+                        .send(EventMessage::PendingConnect(
+                            std::time::Duration::from_secs(20),
+                            peripheral.clone(),
+                        ))
+                        .await
+                });
+            }
+            _ => log::info!("PERIPHERAL IS GONE!!!!!"),
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn handle_connected(self: &Self, sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
+        log::info!("DeviceConnected: {:?}", bd_addr);
+        let peripheral = self.central.peripheral(bd_addr);
+        match peripheral {
+            Some(peripheral) => {
+                log::debug!(
+                    "Connected {:?} with {:?}",
+                    peripheral.properties().local_name,
+                    peripheral.properties()
+                );
+
+                let value_peripheral_clone = peripheral.clone();
+                let value_sender = sender.clone();
+                let value_char_uuid: UUID =
+                    "85:6D:27:BF:B8:E1:41:09:BF:61:57:33:F4:E1:B2:99".parse()?;
+                let characteristics = peripheral.discover_characteristics()?;
+                for c in characteristics {
+                    if c.uuid == value_char_uuid {
+                        log::debug!("UUID {:?} Discovery: {:#?}", value_char_uuid, c);
+                        let result = || -> Result<()> {
+                            let value = value_peripheral_clone.read(&c)?;
+                            let value = String::from_utf8(value)?;
+                            task::block_on(async {
+                                value_sender
+                                    .send(EventMessage::CoalesceEvent(value_char_uuid, value))
+                                    .await;
+                            });
+                            Ok(())
+                        }();
+
+                        match result {
+                            Ok(_) => {}
+                            Err(err) => {
+                                log::error!(
+                                    "Failed to do something with characteristic discovery: {:?}",
+                                    err
+                                );
+                            }
+                        }
+                    }
+                }
+
+                let data_peripheral_clone = peripheral.clone();
+                let data_sender = sender.clone();
+                let data_char_uuid: UUID =
+                    "97:87:A5:54:76:CC:4D:02:99:BB:AA:7D:5A:4F:4A:99".parse()?;
+                let characteristics = peripheral.discover_characteristics()?;
+                for c in characteristics {
+                    if c.uuid == data_char_uuid {
+                        log::debug!("UUID {:?} Discovery: {:#?}", data_char_uuid, c);
+                        let result = || -> Result<()> {
+                            let value = data_peripheral_clone.read(&c)?;
+                            let value = String::from_utf8(value)?;
+                            task::block_on(async {
+                                data_sender.send(EventMessage::CoalesceEvent(data_char_uuid, value)).await;
+                            });
+                            Ok(())
+                        }();
+
+                        match result {
+                            Ok(_) => {}
+                            Err(err) => {
+                                log::error!("Failed to do something with the discovered characteristics: {:?}", err);
+                            }
+                        }
+                    }
                 }
 
                 task::block_on(async {

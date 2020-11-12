@@ -225,6 +225,7 @@ dependencies = [
 [[package]]
 name = "btleplug"
 version = "0.5.4"
+source = "git+https://github.com/trueb2/btleplug?branch=user/trueb2/async-disconnect-connect#c9bb1fc3aea382ee0503155747e557095dd8270d"
 dependencies = [
  "async-std",
  "backtrace",
@@ -241,7 +242,6 @@ dependencies = [
  "nom",
  "num",
  "objc",
- "serde",
  "uuid",
  "winrt",
 ]
