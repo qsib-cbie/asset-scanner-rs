@@ -31,6 +31,7 @@ pub struct CentralManager {
 #[cfg(target_os = "linux")]
 fn get_central(manager: &Manager) -> ConnectedAdapter {
     let adapters = manager.adapters().unwrap();
+    log::debug!("Adapters: {:?}", &adapters);
     let adapter = adapters.into_iter().nth(0).unwrap();
     adapter.connect().unwrap()
 }
@@ -59,42 +60,46 @@ impl CentralManager {
         }
     }
 
-    fn handle_discovered(
-        self: &Self,
-        _sender: Sender<EventMessage>,
-        bd_addr: BDAddr,
-    ) -> Result<()> {
-        log::trace!("DeviceDiscovered: {:#?}", bd_addr);
+    fn handle_discovered(self: &Self, sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
+        log::debug!("DeviceDiscovered: {:#?}", bd_addr);
         let peripheral = self.central.peripheral(bd_addr);
         log::trace!("Peripheral: {:#?}", peripheral);
         match peripheral {
-            Some(peripheral) => match peripheral.properties().local_name {
-                Some(name) => {
-                    if name.starts_with("QSIB") {
-                        log::debug!("DeviceDiscovered: {:#?}", bd_addr);
-                        log::debug!("Found {} with {:?}", name, peripheral.properties());
-                        peripheral.connect()?;
+            Some(peripheral) => {
+                log::info!("{:?}", peripheral.properties());
+                match peripheral.properties().local_name {
+                    Some(name) => {
+                        if name.starts_with("QSIB") {
+                            log::info!("Found {} with {:?}", name, peripheral.properties());
+                            task::block_on(async {
+                                sender
+                                    .send(EventMessage::PendingConnect(None, peripheral))
+                                    .await;
+                            })
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
 
         Ok(())
     }
 
-    fn handle_updated(self: &Self, _sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
-        log::info!("DeviceUpdated {:?}", bd_addr);
+    fn handle_updated(self: &Self, sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
+        log::trace!("DeviceUpdated {:?}", bd_addr);
         let peripheral = self.central.peripheral(bd_addr);
         match peripheral {
             Some(peripheral) => match peripheral.properties().local_name {
                 Some(name) => {
-                    if name.starts_with("QSIB") {
+                    if name.starts_with("QSIB") && !peripheral.is_connected() {
                         log::debug!("Updated {} with {:?}", name, peripheral.properties());
-                        for c in peripheral.characteristics() {
-                            log::debug!("Updated Characteristic: {:#?}", c);
-                        }
+                        task::block_on(async {
+                            sender
+                                .send(EventMessage::PendingConnect(None, peripheral))
+                                .await;
+                        })
                     }
                 }
                 _ => {}
@@ -108,7 +113,12 @@ impl CentralManager {
     #[cfg(target_os = "macos")]
     fn handle_connected(self: &Self, sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
         log::info!("DeviceConnected: {:?}", bd_addr);
-        let peripheral = self.central.peripheral(bd_addr);
+        let peripheral = self.central.peripheral(bd_addr.clone());
+        task::block_on(async {
+            sender
+                .send(EventMessage::ClearPendingConnects(bd_addr))
+                .await
+        });
         match peripheral {
             Some(peripheral) => {
                 log::debug!(
@@ -127,6 +137,7 @@ impl CentralManager {
                         log::debug!("UUID {:?} Discovery: {:#?}", value_char_uuid, discovery);
                         let result = || -> Result<()> {
                             let value = value_peripheral_clone.read(&discovery)?;
+                            log::trace!("{:#?}", value);
                             let value = String::from_utf8(value)?;
                             task::block_on(async {
                                 value_sender
@@ -156,6 +167,7 @@ impl CentralManager {
                     log::debug!("UUID {:?} Discovery: {:#?}", data_char_uuid, discovery);
                     let result = || -> Result<()> {
                         let value = data_peripheral_clone.read(&discovery)?;
+                        log::trace!("{:#?}", value);
                         let value = String::from_utf8(value)?;
                         task::block_on(async {
                             data_sender.send(EventMessage::CoalesceEvent(data_char_uuid, value)).await;
@@ -179,7 +191,7 @@ impl CentralManager {
                 task::block_on(async {
                     sender
                         .send(EventMessage::PendingDisconnect(
-                            std::time::Duration::from_secs(10),
+                            Some(std::time::Duration::from_secs(10)),
                             peripheral.clone(),
                         ))
                         .await
@@ -188,7 +200,7 @@ impl CentralManager {
                 task::block_on(async {
                     sender
                         .send(EventMessage::PendingConnect(
-                            std::time::Duration::from_secs(20),
+                            Some(std::time::Duration::from_secs(20)),
                             peripheral.clone(),
                         ))
                         .await
@@ -204,9 +216,14 @@ impl CentralManager {
     fn handle_connected(self: &Self, sender: Sender<EventMessage>, bd_addr: BDAddr) -> Result<()> {
         log::info!("DeviceConnected: {:?}", bd_addr);
         let peripheral = self.central.peripheral(bd_addr);
+        task::block_on(async {
+            sender
+                .send(EventMessage::ClearPendingConnects(bd_addr))
+                .await
+        });
         match peripheral {
             Some(peripheral) => {
-                log::debug!(
+                log::info!(
                     "Connected {:?} with {:?}",
                     peripheral.properties().local_name,
                     peripheral.properties()
@@ -222,7 +239,8 @@ impl CentralManager {
                         log::debug!("UUID {:?} Discovery: {:#?}", value_char_uuid, c);
                         let result = || -> Result<()> {
                             let value = value_peripheral_clone.read(&c)?;
-                            let value = String::from_utf8(value)?;
+                            log::trace!("Raw value: '{:X?}'", &value);
+                            let value = String::from_utf8(value[1..].to_vec())?;
                             task::block_on(async {
                                 value_sender
                                     .send(EventMessage::CoalesceEvent(value_char_uuid, value))
@@ -253,9 +271,12 @@ impl CentralManager {
                         log::debug!("UUID {:?} Discovery: {:#?}", data_char_uuid, c);
                         let result = || -> Result<()> {
                             let value = data_peripheral_clone.read(&c)?;
-                            let value = String::from_utf8(value)?;
+                            log::trace!("Raw value: '{:X?}'", value);
+                            let value = String::from_utf8(value[1..].to_vec())?;
                             task::block_on(async {
-                                data_sender.send(EventMessage::CoalesceEvent(data_char_uuid, value)).await;
+                                data_sender
+                                    .send(EventMessage::CoalesceEvent(data_char_uuid, value))
+                                    .await;
                             });
                             Ok(())
                         }();
@@ -272,7 +293,7 @@ impl CentralManager {
                 task::block_on(async {
                     sender
                         .send(EventMessage::PendingDisconnect(
-                            std::time::Duration::from_secs(10),
+                            Some(std::time::Duration::from_secs(10)),
                             peripheral.clone(),
                         ))
                         .await
@@ -281,7 +302,7 @@ impl CentralManager {
                 task::block_on(async {
                     sender
                         .send(EventMessage::PendingConnect(
-                            std::time::Duration::from_secs(20),
+                            Some(std::time::Duration::from_secs(20)),
                             peripheral.clone(),
                         ))
                         .await
@@ -326,6 +347,7 @@ impl CentralManager {
         task::spawn(async move {
             let mut coalescing_start: Option<std::time::Instant> = None;
             let mut coalescing_payload = std::collections::HashSet::new();
+            let mut pending_connects = std::collections::HashSet::new();
             loop {
                 let sender = sender_clone.clone();
                 let mut receiver = receiver.clone();
@@ -333,9 +355,17 @@ impl CentralManager {
                     task::block_on(async { receiver.next().await.unwrap() });
                 match event_message {
                     EventMessage::PendingConnect(duration, peripheral) => {
-                        log::info!("Pending connection in {:?}", duration);
+                        if pending_connects.contains(&peripheral.address()) {
+                            continue;
+                        } else {
+                            pending_connects.insert(peripheral.address());
+                            log::info!("Pending connection in {:?}", duration);
+                        }
+
                         task::spawn(async move {
-                            async_std::task::sleep(duration).await;
+                            if let Some(duration) = duration {
+                                async_std::task::sleep(duration).await;
+                            }
                             log::info!(
                                 "Attempting connecting {:?}",
                                 peripheral.properties().local_name
@@ -351,7 +381,9 @@ impl CentralManager {
                     EventMessage::PendingDisconnect(duration, peripheral) => {
                         log::info!("Pending disconnection in {:?}", duration);
                         task::spawn(async move {
-                            async_std::task::sleep(duration).await;
+                            if let Some(duration) = duration {
+                                async_std::task::sleep(duration).await;
+                            }
                             log::info!("Disconnecting {:?}", peripheral.properties().local_name);
                             match peripheral.disconnect() {
                                 Ok(_) => {}
@@ -360,6 +392,9 @@ impl CentralManager {
                                 }
                             }
                         });
+                    }
+                    EventMessage::ClearPendingConnects(peripheral_uuid) => {
+                        pending_connects.remove(&peripheral_uuid);
                     }
                     EventMessage::TikTok => {
                         log::trace!("Tok ...");
@@ -428,19 +463,20 @@ impl CentralManager {
     }
 }
 
-pub enum EventMessage {
+pub enum PEventMessage<P: btleplug::api::Peripheral> {
     TikTok, // nop nop nop
-    PendingConnect(
-        std::time::Duration,
-        btleplug::corebluetooth::peripheral::Peripheral,
-    ),
-    PendingDisconnect(
-        std::time::Duration,
-        btleplug::corebluetooth::peripheral::Peripheral,
-    ),
+    PendingConnect(Option<std::time::Duration>, P),
+    PendingDisconnect(Option<std::time::Duration>, P),
+    ClearPendingConnects(BDAddr),
     CoalesceEvent(UUID, String),
     Error(CliError),
 }
+
+#[cfg(target_os = "macos")]
+type EventMessage = PEventMessage<btleplug::corebluetooth::peripheral::Peripheral>;
+
+#[cfg(target_os = "linux")]
+type EventMessage = PEventMessage<btleplug::bluez::adapter::peripheral::Peripheral>;
 
 #[cfg(test)]
 mod tests {
